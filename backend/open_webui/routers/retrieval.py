@@ -1599,27 +1599,70 @@ def process_file(
                     
                     if file_extension in bypass_tika_extensions:
                         log.info(f"Bypassing Tika for {file_extension.upper()} file: {file.filename}")
-                        # For CSV/Excel files, read content directly without Tika
-                        try:
-                            with open(file_path, 'r', encoding='utf-8') as f:
-                                file_content = f.read()
-                        except UnicodeDecodeError:
-                            # If UTF-8 fails, try reading as binary and decode
-                            with open(file_path, 'rb') as f:
-                                file_content = f.read().decode('utf-8', errors='ignore')
                         
-                        docs = [
-                            Document(
-                                page_content=file_content,
-                                metadata={
-                                    "name": file.filename,
-                                    "created_by": file.user_id,
-                                    "file_id": file.id,
-                                    "source": file.filename,
-                                    "bypassed_tika": True,
-                                },
-                            )
-                        ]
+                        try:
+                            if file_extension == 'csv':
+                                # Handle CSV files
+                                try:
+                                    with open(file_path, 'r', encoding='utf-8') as f:
+                                        file_content = f.read()
+                                except UnicodeDecodeError:
+                                    with open(file_path, 'r', encoding='latin-1') as f:
+                                        file_content = f.read()
+                            
+                            elif file_extension in ['xls', 'xlsx', 'xlsm', 'xlsb']:
+                                # Handle Excel files using openpyxl or pandas
+                                try:
+                                    import pandas as pd
+                                    df = pd.read_excel(file_path, sheet_name=None)
+                                    
+                                    # Convert all sheets to formatted text
+                                    file_content = ""
+                                    for sheet_name, sheet_data in df.items():
+                                        file_content += f"=== Sheet: {sheet_name} ===\n"
+                                        file_content += sheet_data.to_string()
+                                        file_content += "\n\n"
+                                    
+                                    log.info(f"Successfully parsed Excel file with {len(df)} sheet(s)")
+                                except ImportError:
+                                    log.warning("pandas not installed, falling back to openpyxl")
+                                    from openpyxl import load_workbook
+                                    
+                                    wb = load_workbook(file_path)
+                                    file_content = ""
+                                    
+                                    for sheet_name in wb.sheetnames:
+                                        ws = wb[sheet_name]
+                                        file_content += f"=== Sheet: {sheet_name} ===\n"
+                                        
+                                        for row in ws.iter_rows(values_only=True):
+                                            file_content += "\t".join(
+                                                str(cell) if cell is not None else "" 
+                                                for cell in row
+                                            ) + "\n"
+                                        file_content += "\n"
+                                    
+                                    log.info(f"Successfully parsed Excel file with {len(wb.sheetnames)} sheet(s)")
+                            
+                            docs = [
+                                Document(
+                                    page_content=file_content,
+                                    metadata={
+                                        "name": file.filename,
+                                        "created_by": file.user_id,
+                                        "file_id": file.id,
+                                        "source": file.filename,
+                                        "bypassed_tika": True,
+                                        "file_type": file_extension.upper(),
+                                    },
+                                )
+                            ]
+                            log.info(f"Processed {file_extension.upper()} file: {file.filename}")
+                        
+                        except Exception as e:
+                            log.error(f"Error processing {file_extension.upper()} file: {str(e)}")
+                            raise Exception(f"Failed to process {file_extension.upper()} file: {str(e)}")
+                    
                     else:
                         # Normal processing with Tika for other file types
                         loader = Loader(
@@ -1721,7 +1764,7 @@ def process_file(
                         user=user,
                     )
                     log.info(f"added {len(docs)} items to collection {collection_name}")
-                    #print("process file result: ", result)
+                    
                     if result:
                         Files.update_file_metadata_by_id(
                             file.id,
